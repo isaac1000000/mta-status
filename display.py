@@ -76,11 +76,11 @@ DEPART_STEP = 2
 
 # Alert "!" blink rate (frames per on/off). The scroll hops SCROLL_CHARS columns
 # every SCROLL_FRAMES frames (2 chars per 0.4s at 5 fps), with SCROLL_GAP columns
-# of normal top bar between passes (~12s).
+# of normal top bar between passes (~30s).
 BANG_BLINK = 3
 SCROLL_FRAMES = 2
 SCROLL_CHARS = 2
-SCROLL_GAP = 60
+SCROLL_GAP = 150
 
 
 class TrainDisplay:
