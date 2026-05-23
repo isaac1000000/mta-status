@@ -2,16 +2,18 @@
 
 Polls the MTA realtime feed and shows the next southbound (Manhattan-bound)
 N and W departures on the 16x2 I2C LCD as a little animated scene. The feed is
-refreshed every REFRESH_SECONDS, but the display is redrawn every ANIM_SECONDS
-so the scene animates between fetches. Runs until interrupted.
+refreshed every REFRESH_SECONDS and service alerts every ALERT_SECONDS, but the
+display is redrawn every ANIM_SECONDS so the scene animates between fetches.
+Runs until interrupted.
 """
 
 import time
 
-from mta import STATION_NAME, fetch_departures
+from mta import STATION_NAME, fetch_alerts, fetch_departures
 from display import TrainDisplay
 
 REFRESH_SECONDS = 30
+ALERT_SECONDS = 120
 ANIM_SECONDS = 0.2
 
 
@@ -20,7 +22,9 @@ def main():
     display.show_message("Astoria-Ditmars", "loading...")
 
     departures = None
+    service_alerts = []
     last_fetch = 0.0
+    last_alert = 0.0
     frame = 0
 
     try:
@@ -37,7 +41,23 @@ def main():
                     time.sleep(REFRESH_SECONDS)
                     continue
 
-            display.render(departures, frame)
+            if last_alert == 0.0 or now - last_alert >= ALERT_SECONDS:
+                try:
+                    service_alerts = fetch_alerts()
+                except Exception as exc:
+                    print(f"alert error: {exc}")  # non-fatal: keep last alerts
+                last_alert = now
+
+            # Combine the per-line delay flag with any service-alert headlines.
+            parts = []
+            if departures.delayed_routes:
+                parts.append("/".join(departures.delayed_routes) + " delays")
+            parts += service_alerts
+            alert_text = "   -   ".join(parts)
+
+            display.render(
+                departures, frame, alert_active=bool(parts), alert_text=alert_text
+            )
             frame += 1
             time.sleep(ANIM_SECONDS)
     except KeyboardInterrupt:

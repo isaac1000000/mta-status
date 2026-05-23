@@ -16,6 +16,9 @@ toward the people (right to left) by lifting one dot a pixel. When a due train
 drops out of the feed it has left, so it rapidly pulls back out to the right
 (Ditmars is a terminus). With no service the group dozes with cycling ``z``'s.
 
+When ``render`` is given an active alert, a ``!`` blinks in the top-right corner
+of the times row and the alert text occasionally scrolls across the whole bar.
+
 Custom CGRAM glyphs (all 8 slots): two man frames, two woman frames, two cat
 frames (open/blink), the subway car (repeated for the train), and the lifted
 wave dot. The caller
@@ -71,6 +74,14 @@ DEPART_TRIGGER = 1
 # Columns the departing train jumps per frame (higher is faster/snappier).
 DEPART_STEP = 2
 
+# Alert "!" blink rate (frames per on/off). The scroll hops SCROLL_CHARS columns
+# every SCROLL_FRAMES frames (2 chars per 0.4s at 5 fps), with SCROLL_GAP columns
+# of normal top bar between passes (~12s).
+BANG_BLINK = 3
+SCROLL_FRAMES = 2
+SCROLL_CHARS = 2
+SCROLL_GAP = 60
+
 
 class TrainDisplay:
     def __init__(self, address=0x27, port=1, cols=16, rows=2):
@@ -119,6 +130,21 @@ class TrainDisplay:
         if not upcoming:
             return "No trains"
         return "  ".join(f"{route} {m}m" for m, route in upcoming)
+
+    def _compose_top(self, times, frame, alert_active, alert_text):
+        """Times line, plus a blinking '!' when alerted and an occasional scroll
+        of the alert text across the whole bar."""
+        if alert_active and alert_text:
+            padded = " " * self.cols + alert_text + " " * self.cols
+            windows = len(padded) - self.cols + 1
+            pos = (frame // SCROLL_FRAMES * SCROLL_CHARS) % (windows + SCROLL_GAP)
+            if pos < windows:
+                return padded[pos : pos + self.cols]
+        if alert_active:
+            line = list(self._fit(times))
+            line[-1] = "!" if (frame // BANG_BLINK) % 2 == 0 else " "
+            return "".join(line)
+        return times
 
     def _draw_group(self, cells, frame):
         """Cat (blinking) and two people (bobbing out of sync) at the left."""
@@ -174,10 +200,12 @@ class TrainDisplay:
                 cells[col] = ch
         return "".join(cells)
 
-    def render(self, departures, frame):
+    def render(self, departures, frame, alert_active=False, alert_text=""):
         """Draw the scene for a Departures snapshot at the given frame."""
         upcoming = self._next_trains(departures)
-        top = self._top_line(upcoming)
+        top = self._compose_top(
+            self._top_line(upcoming), frame, alert_active, alert_text
+        )
         mins = upcoming[0][0] if upcoming else None
 
         # A near train that drops out of the feed has departed: play it leaving.
