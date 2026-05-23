@@ -9,27 +9,24 @@ Bottom row is an animated scene that reads left-to-right:
 
 A cat and two people (a man and a woman) idle at the far left -- the people bob
 gently out of sync, the cat blinks. A train pulls in from the right as its
-arrival nears (closer the sooner it comes), its cars filling the whole length
-from its front out to the right edge, so more of it shows the closer it gets.
-The track ahead of it is a row of low dots (ascii ".") and a pulse rides it
-toward the people (right to left) by lifting one dot a pixel. When a due train
+arrival nears (closer the sooner it comes). The subway fills the whole length
+from its front out to the right edge; the bus is a two-cell vehicle. The ground
+around the vehicle is drawn with underscores (track / road). When a due train
 drops out of the feed it has left, so it rapidly pulls back out to the right
 (Ditmars is a terminus). With no service the group dozes with cycling ``z``'s.
 
 When ``render`` is given an active alert, a ``!`` blinks in the top-right corner
 of the times row and the alert text occasionally scrolls across the whole bar.
 
-Custom CGRAM glyphs (all 8 slots): two man frames, two woman frames, two cat
-frames (open/blink), the subway car (repeated for the train), and the lifted
-wave dot. The caller
+Custom CGRAM glyphs: two man frames, two woman frames, two cat frames
+(open/blink), and the subway car -- with the bus's two halves swapped into the
+CAT_B / CAR slots while a bus view is active. The caller
 advances an incrementing ``frame`` counter; each ``render`` overwrites both rows
 in full (no clear) so animation is flicker-free and stale characters never
 linger.
 """
 
 from RPLCD.i2c import CharLCD
-
-from mta import ROUTES
 
 # 5x8 CGRAM glyphs (one int per row, low 5 bits = pixel columns left->right).
 # Man and woman idle frames: frame B is frame A nudged down a pixel, so they bob
@@ -43,24 +40,27 @@ CAT_A = [0b10001, 0b11011, 0b11111, 0b10101, 0b11111, 0b11111, 0b01110, 0b00000]
 CAT_B = [0b10001, 0b11011, 0b11111, 0b11111, 0b11111, 0b11111, 0b01110, 0b00000]
 # Subway car (boxy, two windows, wheels), repeated to draw the whole train.
 CAR = [0b00000, 0b00000, 0b11111, 0b10101, 0b11111, 0b11111, 0b01010, 0b00000]
-# Wave pulse: a 2x2 dot riding high above the bottom-row "." track dots, so the
-# crest is clearly visible as it travels (one pixel of lift was imperceptible).
-WAVE = [0b00000, 0b00000, 0b00000, 0b01100, 0b01100, 0b00000, 0b00000, 0b00000]
+# Bus: a two-cell vehicle with rounded front/back roof corners (so it reads as a
+# bus, not a train). Loaded into the CAR/CAT_B slots only while in a bus view.
+BUS_LEFT = [0b00000, 0b00000, 0b01111, 0b10001, 0b11111, 0b11111, 0b01010, 0b00000]
+BUS_RIGHT = [0b00000, 0b00000, 0b11110, 0b10001, 0b11111, 0b11111, 0b01010, 0b00000]
 
 MAN_CHARS = ("\x00", "\x01")
 WOMAN_CHARS = ("\x02", "\x03")
 CAT_A_CHAR = "\x04"
 CAT_B_CHAR = "\x05"
 CAR_CHAR = "\x06"
-WAVE_CHAR = "\x07"
+# Bus glyphs reuse the CAT_B / CAR slots (swapped in on a mode change), since
+# all 8 CGRAM slots are otherwise spoken for.
+BUS_RIGHT_CHAR = "\x05"
+BUS_LEFT_CHAR = "\x06"
 
 # A train this many minutes out (or more) sits at the far right; sooner trains
 # pull left toward the waiting people.
 MAX_MIN = 12
 
-# Frames the wave pulse lingers on each track cell before advancing (higher is
-# slower).
-WAVE_STEP = 3
+# Ground the vehicle rides on, drawn around it (underscore = track and road).
+GROUND_CHAR = "_"
 
 # Frames each idle pose holds (the bob), how often the cat blinks, and how many
 # frames a blink stays shut.
@@ -95,7 +95,7 @@ class TrainDisplay:
             rows=rows,
         )
         for slot, bitmap in enumerate(
-            (MAN_A, MAN_B, WOMAN_A, WOMAN_B, CAT_A, CAT_B, CAR, WAVE)
+            (MAN_A, MAN_B, WOMAN_A, WOMAN_B, CAT_A, CAT_B, CAR)
         ):
             self.lcd.create_char(slot, bitmap)
         self.lcd.clear()
@@ -110,26 +110,26 @@ class TrainDisplay:
         self.train_near = self.track_start
         self.train_far = cols - 1
 
-        # Departure animation state.
+        # Animation state. `_mode` lets render() reset on a mode switch so the
+        # incoming view doesn't trigger a false departure. `_is_bus` tracks which
+        # glyphs are currently loaded in the shared CAT_B / CAR slots.
+        self._mode = None
+        self._is_bus = False
         self._prev_soonest = None
         self._depart_col = None
 
     def _fit(self, text):
         return text[: self.cols].ljust(self.cols)
 
-    def _next_trains(self, departures, count=2):
-        """Return up to `count` (minutes, route) pairs soonest-first."""
-        upcoming = []
-        for route in ROUTES:
-            for m in departures.for_route(route):
-                upcoming.append((m, route))
-        upcoming.sort()
-        return upcoming[:count]
-
-    def _top_line(self, upcoming):
+    def _top_line(self, upcoming, empty_text):
         if not upcoming:
-            return "No trains"
-        return "  ".join(f"{route} {m}m" for m, route in upcoming)
+            return empty_text
+        # One label (e.g. both buses, or both N): "Q100 2m 29m". Mixed lines
+        # (e.g. N and W): "N 3m  W 5m".
+        if len({label for _, label in upcoming}) == 1:
+            label = upcoming[0][1]
+            return f"{label} " + " ".join(f"{m}m" for m, _ in upcoming)
+        return "  ".join(f"{label} {m}m" for m, label in upcoming)
 
     def _compose_top(self, times, frame, alert_active, alert_text):
         """Times line, plus a blinking '!' when alerted and an occasional scroll
@@ -149,7 +149,10 @@ class TrainDisplay:
     def _draw_group(self, cells, frame):
         """Cat (blinking) and two people (bobbing out of sync) at the left."""
         bob = (frame // IDLE_STEP) % 2
-        cells[self.cat_col] = CAT_B_CHAR if frame % BLINK_EVERY < BLINK_LEN else CAT_A_CHAR
+        # The cat only blinks in subway view; in a bus view its blink slot holds
+        # a bus glyph, so it stays open-eyed.
+        blink = not self._is_bus and frame % BLINK_EVERY < BLINK_LEN
+        cells[self.cat_col] = CAT_B_CHAR if blink else CAT_A_CHAR
         cells[self.man_col] = MAN_CHARS[bob]
         cells[self.woman_col] = WOMAN_CHARS[1 - bob]
 
@@ -160,51 +163,75 @@ class TrainDisplay:
         if not upcoming:
             return self._sleep_tail(cells, frame)
 
-        # Train pulls in from the right as arrival nears.
+        # Vehicle pulls in from the right as arrival nears. A bus is two cells,
+        # so its front must stop one column short of the edge.
         mins = upcoming[0][0]
         capped = min(mins, MAX_MIN)
-        reach = self.train_far - self.train_near
-        train_col = self.train_near + round((capped / MAX_MIN) * reach)
-        train_col = max(self.train_near, min(self.train_far, train_col))
+        far = (self.cols - 2) if self._is_bus else self.train_far
+        front = self.train_near + round((capped / MAX_MIN) * (far - self.train_near))
+        front = max(self.train_near, min(far, front))
 
-        # Dotted track between the people and the train.
-        for c in range(self.track_start, train_col):
-            cells[c] = "."
+        # Ground around the vehicle (underscores), on both sides of it.
+        for c in range(self.track_start, self.cols):
+            cells[c] = GROUND_CHAR
 
-        # A pulse rides the track toward the people (right -> left), lifting a
-        # dot a pixel as it passes.
-        span = train_col - self.track_start
-        if span > 0:
-            offset = (frame // WAVE_STEP) % span
-            cells[train_col - 1 - offset] = WAVE_CHAR
-
-        # The train fills the whole length from its front out to the right edge.
-        for c in range(train_col, self.cols):
-            cells[c] = CAR_CHAR
+        self._draw_vehicle(cells, front)
         return "".join(cells)
 
-    def _depart_scene(self, train_col, frame):
+    def _draw_vehicle(self, cells, front):
+        """Bus: two cells at `front`. Train: cars from `front` to the edge."""
+        if self._is_bus:
+            cells[front] = BUS_LEFT_CHAR
+            if front + 1 < self.cols:
+                cells[front + 1] = BUS_RIGHT_CHAR
+        else:
+            for c in range(front, self.cols):
+                cells[c] = CAR_CHAR
+
+    def _depart_scene(self, front, frame):
         cells = [" "] * self.cols
         self._draw_group(cells, frame)
         for c in range(self.track_start, self.cols):
-            cells[c] = "."
-        for c in range(max(train_col, self.track_start), self.cols):
-            cells[c] = CAR_CHAR
+            cells[c] = GROUND_CHAR
+        self._draw_vehicle(cells, max(front, self.track_start))
         return "".join(cells)
 
     def _sleep_tail(self, cells, frame):
-        zzz = ["z..", "zz.", "zzz"][(frame // WAVE_STEP) % 3]
+        zzz = ["z..", "zz.", "zzz"][(frame // IDLE_STEP) % 3]
         for i, ch in enumerate(zzz):
             col = self.track_start + 1 + i
             if col < self.cols:
                 cells[col] = ch
         return "".join(cells)
 
-    def render(self, departures, frame, alert_active=False, alert_text=""):
-        """Draw the scene for a Departures snapshot at the given frame."""
-        upcoming = self._next_trains(departures)
+    def render(
+        self,
+        upcoming,
+        frame,
+        mode="subway",
+        empty_text="No trains",
+        alert_active=False,
+        alert_text="",
+    ):
+        """Draw the scene for an arrivals list (sorted (minutes, label) pairs).
+
+        `mode` identifies the current view; switching it resets the departure
+        animation so the new view doesn't read as a train pulling away.
+        """
+        if mode != self._mode:
+            self._mode = mode
+            self._prev_soonest = None
+            self._depart_col = None
+            is_bus = mode != "subway"
+            if is_bus != self._is_bus:
+                self._is_bus = is_bus
+                # Swap the shared slots between (cat-blink, train car) and the
+                # two bus halves.
+                self.lcd.create_char(5, BUS_RIGHT if is_bus else CAT_B)
+                self.lcd.create_char(6, BUS_LEFT if is_bus else CAR)
+
         top = self._compose_top(
-            self._top_line(upcoming), frame, alert_active, alert_text
+            self._top_line(upcoming, empty_text), frame, alert_active, alert_text
         )
         mins = upcoming[0][0] if upcoming else None
 

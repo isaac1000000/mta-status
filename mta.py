@@ -94,6 +94,17 @@ def fetch_departures(direction=SOUTHBOUND, routes=ROUTES, limit=3):
     )
 
 
+def upcoming(departures, count=2):
+    """Flatten a Departures into up to `count` (minutes, route) pairs, soonest
+    first -- the generic arrivals list the display renders."""
+    pairs = []
+    for route in ROUTES:
+        for m in departures.for_route(route):
+            pairs.append((m, route))
+    pairs.sort()
+    return pairs[:count]
+
+
 def fetch_alerts(routes=ROUTES, stop_prefix=STOP_ID, limit=3, timeout=20):
     """Return up to `limit` currently-active service-alert headlines that affect
     our routes or station, newest-feed-order first, whitespace collapsed.
