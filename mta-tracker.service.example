@@ -1,0 +1,19 @@
+# Example systemd unit for running the tracker on boot.
+# Copy to mta-tracker.service, replace YOUR_USER and the install path,
+# then install it (see README "Run on startup").
+
+[Unit]
+Description=Astoria-Ditmars N/W train tracker (LCD)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/mta-tracker
+ExecStart=/home/YOUR_USER/mta-tracker/venv/bin/python /home/YOUR_USER/mta-tracker/main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
